@@ -11,6 +11,14 @@ class InvertedManifoldEngine(nn.Module):
     The inverted softmax (softmax over negative scores) produces an
     entropy-preserving "true-alpha" distribution that feeds into a risk-aware
     energy saturation model gating between "locked" and "proxy_risk" regimes.
+
+    Energy saturation formula:
+        E_sat = alpha / (tau + lambda * D_pi + 0.4 * mean(risk))^2
+
+    The +0.4*mean(risk) term adds a baseline risk floor from the raw risk
+    score distribution, keeping the system in proxy_risk longer for
+    conservative safety. With default risk_scores=[0.0,0.0,0.0,0.2,0.4,
+    0.6,0.8,0.9,1.0,1.0], mean(risk)=0.49, adding ~0.196 to denominator.
     """
 
     def __init__(self, tau=0.01, lam=1.0, alpha_param=5.0,
@@ -59,7 +67,8 @@ class InvertedManifoldEngine(nn.Module):
         D_pi = torch.sum(alpha * self.risk_scores.to(alpha.device))
 
         # Energy saturation: lower E_sat = more caution needed
-        E_sat = self.alpha_param / (self.tau + self.lam * D_pi) ** 2
+        # + 0.4 * mean(risk) adds baseline risk floor for conservative safety
+        E_sat = self.alpha_param / (self.tau + self.lam * D_pi + 0.4 * self.risk_scores.mean()) ** 2
 
         # Sigmoid gating: E_sat > 10.0 -> locked, else proxy_risk
         lock_strength = torch.sigmoid(E_sat - 10.0)
@@ -126,7 +135,7 @@ class InvertedManifoldEngine(nn.Module):
         """Quick regime check without full forward pass."""
         alpha = F.softmax(-raw_scores, dim=-1)
         D_pi = torch.sum(alpha * self.risk_scores.to(alpha.device))
-        E_sat = self.alpha_param / (self.tau + self.lam * D_pi) ** 2
+        E_sat = self.alpha_param / (self.tau + self.lam * D_pi + 0.4 * self.risk_scores.mean()) ** 2
         lock_strength = torch.sigmoid(E_sat - 10.0)
         return "locked" if lock_strength.item() > 0.5 else "proxy_risk"
 
@@ -254,7 +263,7 @@ if __name__ == "__main__":
     print(f"\n[Forward Pass Results]")
     print(f"  D_pi:          {state['D_pi']:.4f}")
     print(f"  entropy_bits:  {state['entropy_bits']:.4f}")
-    print(f"  E_sat:         {state['E_sat']:.2f}")
+    print(f"  E_sat:         {state['E_sat']:.4f}  (new formula with 0.4*mean(risk))")
     print(f"  lock_strength: {state['lock_strength']:.4f}")
     print(f"  regime:        {state['regime']}")
     print(f"  T_lyap:        {state['T_lyap']}")
